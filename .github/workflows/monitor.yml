@@ -1,0 +1,48 @@
+name: Monitor OSS Repositories
+
+on:
+  schedule:
+    - cron: "0 * * * *" 
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oss-repo-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    if: ${{ vars.MONITOR_ENABLED == 'true' }}
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    env:
+      REPOS: |
+        bitcoin/bitcoin
+        rust-bitcoin/rust-bitcoin
+        bitcoin-core/secp256k1
+      INPUT_GIT_SECRET: ${{ github.token }}
+      INPUT_DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      INPUT_NOTIFIER: discord
+      INPUT_FETCH_DATA_INTERVAL: "1"
+    steps:
+      - name: Check new issues and pull requests
+        shell: bash
+        run: |
+          : "${INPUT_DISCORD_WEBHOOK_URL:?Set the DISCORD_WEBHOOK_URL secret}"
+          bundle="$RUNNER_TEMP/repo-monitor/dist/index.js"
+          mkdir -p "$RUNNER_TEMP/repo-monitor"
+          curl -fsSL --retry 3 --max-time 60 \
+            https://codeload.github.com/shubhaamgupta11/repo-monitor/tar.gz/3d98f52e802544401b991bb7f6484b604675a1a9 \
+            | tar -xz -C "$RUNNER_TEMP/repo-monitor" --strip-components=1
+          status=0
+          for repo in $REPOS; do
+            for task in monitor-issues monitor-prs; do
+              echo "::group::$repo - $task"
+              INPUT_REPO_OWNER="${repo%%/*}" INPUT_REPO_NAME="${repo#*/}" \
+                INPUT_TASK="$task" node "$bundle" || status=1
+              echo "::endgroup::"
+            done
+          done
+          exit "$status"
