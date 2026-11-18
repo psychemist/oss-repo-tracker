@@ -5,6 +5,57 @@ const STATE_BRANCH = 'monitor-state';
 const STATE_FILE = 'state.json';
 const DAY = 24 * 60 * 60 * 1000;
 
+const lagosDate = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Africa/Lagos', day: '2-digit', month: 'short', year: 'numeric',
+  hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+});
+
+function ageAtDelivery(created, alerted) {
+  const minutes = Math.floor(Math.max(0, alerted.getTime() - created.getTime()) / 60_000);
+  if (minutes === 0) return 'less than a minute';
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor(minutes / 60) % 24;
+  const unit = (n, name) => `${n} ${name}${n === 1 ? '' : 's'}`;
+  if (days) return [unit(days, 'day'), hours ? unit(hours, 'hour') : ''].filter(Boolean).join(' ');
+  if (hours) return [unit(hours, 'hour'), minutes % 60 ? unit(minutes % 60, 'minute') : ''].filter(Boolean).join(' ');
+  return unit(minutes, 'minute');
+}
+
+export function buildDiscordPayload(item, repo, alertedAt) {
+  const isPR = Boolean(item.pull_request);
+  const type = isPR ? 'PR' : 'Issue';
+  const created = new Date(item.created_at);
+  const alerted = new Date(alertedAt);
+  if (!Number.isFinite(created.getTime()) || !Number.isFinite(alerted.getTime())) {
+    throw new Error('Cannot format an alert with an invalid timestamp.');
+  }
+  const status = isPR && item.merged_at
+    ? { text: '🟣 Merged', color: 0x9b59b6 }
+    : item.state !== 'closed'
+      ? { text: '🟢 Open', color: 0x57f287 }
+      : isPR
+        ? { text: '🔴 Closed (unmerged)', color: 0xed4245 }
+        : { text: '⚪ Closed', color: 0x95a5a6 };
+  const labels = item.labels.map(label => typeof label === 'string' ? label : label.name).join(', ');
+  return {
+    allowed_mentions: { parse: [] },
+    embeds: [{
+      author: { name: item.user?.login ?? 'unknown', ...(item.user?.avatar_url ? { icon_url: item.user.avatar_url } : {}) },
+      title: `${isPR ? '🚀' : '🐛'} ${repo} — ${type} #${item.number}`,
+      url: item.html_url,
+      fields: [
+        { name: 'Title', value: item.title.slice(0, 1024) },
+        { name: 'Status', value: status.text, inline: true },
+        { name: 'Labels', value: labels.slice(0, 1024) || 'None', inline: true },
+        { name: 'Created', value: `${lagosDate.format(created)} WAT` },
+        { name: 'Alerted', value: `${lagosDate.format(alerted)} WAT · ${ageAtDelivery(created, alerted)} after creation` },
+      ],
+      description: `[View ${type}](${item.html_url})`,
+      color: status.color,
+    }],
+  };
+}
+
 export async function monitor({
   env = process.env,
   fetchImpl = globalThis.fetch,
@@ -99,27 +150,14 @@ export async function monitor({
 
   async function notify(item, repo) {
     const isPR = Boolean(item.pull_request);
-    const type = isPR ? 'PR' : 'Issue';
-    const labels = item.labels.map(label => typeof label === 'string' ? label : label.name).join(', ');
-    const payload = {
-      allowed_mentions: { parse: [] },
-      embeds: [{
-        author: { name: item.user?.login ?? 'unknown', ...(item.user?.avatar_url ? { icon_url: item.user.avatar_url } : {}) },
-        title: `${isPR ? '🚀 New Pull Request' : '🐛 New Issue'} in ${repo.split('/')[1]}`,
-        fields: [
-          { name: 'Title', value: item.title.slice(0, 1024) },
-          { name: 'Labels', value: labels.slice(0, 1024) || 'None' },
-        ],
-        description: `[View ${type}](${item.html_url})`,
-        color: isPR ? 0x5865f2 : 0x57f287,
-      }],
-    };
+    const { data: latest } = await github(`/repos/${repo}/${isPR ? 'pulls' : 'issues'}/${item.number}`);
+    const current = { ...item, ...latest, pull_request: item.pull_request };
     for (let attempt = 0; attempt < 4; attempt++) {
       let response;
       try {
         response = await fetchImpl(webhook.toString(), {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload), signal: AbortSignal.timeout(30_000),
+          body: JSON.stringify(buildDiscordPayload(current, repo, now())), signal: AbortSignal.timeout(30_000),
         });
       } catch {
         // Avoid logging a fetch error containing the secret webhook URL.
