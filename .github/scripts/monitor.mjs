@@ -50,7 +50,6 @@ export function buildDiscordPayload(item, repo, alertedAt) {
         { name: 'Created', value: `${lagosDate.format(created)} WAT` },
         { name: 'Alerted', value: `${lagosDate.format(alerted)} WAT · ${ageAtDelivery(created, alerted)} after creation` },
       ],
-      description: `[View ${type}](${item.html_url})`,
       color: status.color,
     }],
   };
