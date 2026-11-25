@@ -28,7 +28,7 @@
     },
     "bitcoin-core/secp256k1": {
       "since": "2026-11-10T23:00:00.000Z",
-      "checked_until": "2026-11-25T00:42:20.951Z",
+      "checked_until": "2026-11-25T14:18:37.366Z",
       "sent": {}
     }
   }
